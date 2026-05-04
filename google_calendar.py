@@ -6,7 +6,7 @@ import json
 import os
 import logging
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, List, Dict
 import pytz
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -33,23 +33,24 @@ class CalendarService:
 
     def _build_service(self):
         """Ініціалізація Google Calendar API через Service Account."""
-        # Спочатку шукаємо JSON-рядок в ENV (для Render/Railway)
         creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
+        creds_file = os.environ.get("GOOGLE_CREDENTIALS_FILE", "credentials.json")
+
         if creds_json:
-            creds_info = json.loads(creds_json)
+            # Варіант 1 — JSON-рядок з env (Render/Railway)
             creds = service_account.Credentials.from_service_account_info(
-                creds_info, scopes=SCOPES
+                json.loads(creds_json), scopes=SCOPES
             )
         else:
-            # Локально — читаємо файл
+            # Варіант 2 — локальний файл
             creds = service_account.Credentials.from_service_account_file(
-                "credentials.json", scopes=SCOPES
+                creds_file, scopes=SCOPES
             )
         return build("calendar", "v3", credentials=creds)
 
     # ─── Читання ─────────────────────────────────────────────────────────
 
-    def get_busy_slots(self, date_str: str) -> list[str]:
+    def get_busy_slots(self, date_str: str) -> List[str]:
         """Повертає список зайнятих часових слотів у форматі ['09:00', '11:00', ...]."""
         date_obj = datetime.strptime(date_str, "%Y-%m-%d")
         # Запит подій за весь день
@@ -76,7 +77,7 @@ class CalendarService:
                 busy.append(dt.strftime("%H:%M"))
         return busy
 
-    def get_user_bookings(self, user_id: str) -> list[dict]:
+    def get_user_bookings(self, user_id: str) -> List[Dict]:
         """Повертає майбутні бронювання конкретного користувача."""
         now = datetime.now(self.timezone)
         max_time = now + timedelta(days=60)
