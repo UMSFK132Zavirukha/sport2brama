@@ -1,0 +1,18 @@
+# render.yaml — конфігурація для Render.com
+services:
+  - type: worker
+    name: booking-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false          # вводите вручну в Render dashboard
+      - key: GROUP_ID
+        sync: false          # ID супергрупи, наприклад -1001234567890
+      - key: TOPIC_ID
+        sync: false          # ID гілки всередині групи
+      - key: CALENDAR_ID
+        sync: false
+      - key: GOOGLE_CREDENTIALS_JSON
+        sync: false          # вставте весь JSON з credentials.json
