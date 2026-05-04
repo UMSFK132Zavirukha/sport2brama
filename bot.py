@@ -385,13 +385,17 @@ async def cancel_booking_selected(update: Update, context: ContextTypes.DEFAULT_
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Спільні fallbacks — будь-яка кнопка меню скидає поточний флоу
-    common_fallbacks = [
+    # Fallback просто завершує поточний conversation — далі повідомлення
+    # підхоплює відповідний ConversationHandler через свої entry_points
+    async def _end_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        return ConversationHandler.END
+
+    end_fallbacks = [
         CommandHandler("start", start),
-        MessageHandler(filters.Regex(f"^{BTN_BOOK}$"),   book_start),
-        MessageHandler(filters.Regex(f"^{BTN_CHECK}$"),  check_start),
-        MessageHandler(filters.Regex(f"^{BTN_CANCEL}$"), cancel_booking_start),
-        MessageHandler(filters.Regex(f"^{BTN_MY}$"),     my_bookings),
+        MessageHandler(
+            filters.Regex(f"^({BTN_BOOK}|{BTN_CHECK}|{BTN_CANCEL}|{BTN_MY})$"),
+            _end_conversation,
+        ),
     ]
 
     # Флоу бронювання
@@ -411,7 +415,8 @@ def main():
                 CallbackQueryHandler(book_confirm, pattern="^confirm$|^main_menu$"),
             ],
         },
-        fallbacks=common_fallbacks,
+        fallbacks=end_fallbacks,
+        allow_reentry=True,
     )
 
     # Флоу перевірки зайнятості
@@ -425,7 +430,8 @@ def main():
                 CallbackQueryHandler(check_date_selected, pattern="^check_date_|^check_again$|^main_menu$"),
             ],
         },
-        fallbacks=common_fallbacks,
+        fallbacks=end_fallbacks,
+        allow_reentry=True,
     )
 
     # Флоу скасування
@@ -439,7 +445,8 @@ def main():
                 CallbackQueryHandler(cancel_booking_selected, pattern="^del_|^main_menu$"),
             ],
         },
-        fallbacks=common_fallbacks,
+        fallbacks=end_fallbacks,
+        allow_reentry=True,
     )
 
     app.add_handler(CommandHandler("start", start))
