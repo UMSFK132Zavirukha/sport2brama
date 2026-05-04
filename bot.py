@@ -1,7 +1,11 @@
 import logging
 import os
 from datetime import datetime, timedelta, time
+from typing import List
 import pytz
+from dotenv import load_dotenv
+
+load_dotenv()  # завантажує змінні з .env якщо файл існує
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -17,14 +21,15 @@ logger = logging.getLogger(__name__)
 
 # --- Конфіг ---
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-CHANNEL_ID = os.environ["CHANNEL_ID"]          # наприклад -1001234567890
+GROUP_ID = os.environ["GROUP_ID"]              # наприклад -1001234567890
+TOPIC_ID = int(os.environ["TOPIC_ID"])         # ID гілки (message_thread_id)
 CALENDAR_ID = os.environ["CALENDAR_ID"]        # наприклад abc@group.calendar.google.com
 TIMEZONE = pytz.timezone("Europe/Kiev")
 
-# Робочі години майданчику
-WORK_START = 8   # 08:00
-WORK_END = 21    # 21:00
-SLOT_DURATION = 1  # година
+# Робочі години майданчику (можна змінювати в .env)
+WORK_START = int(os.environ.get("WORK_START", 8))
+WORK_END = int(os.environ.get("WORK_END", 21))
+SLOT_DURATION = int(os.environ.get("SLOT_DURATION", 1))
 
 # Стани розмови
 SELECT_DATE, SELECT_TIME, CONFIRM = range(3)
@@ -53,7 +58,7 @@ def get_date_keyboard(offset_days: int = 0) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 
-def get_time_keyboard(date_str: str, busy_slots: list[str]) -> InlineKeyboardMarkup:
+def get_time_keyboard(date_str: str, busy_slots: List[str]) -> InlineKeyboardMarkup:
     """Клавіатура вибору часу з позначенням зайнятих слотів."""
     buttons = []
     row = []
@@ -77,8 +82,13 @@ def get_time_keyboard(date_str: str, busy_slots: list[str]) -> InlineKeyboardMar
 
 
 async def notify_channel(context: ContextTypes.DEFAULT_TYPE, text: str):
-    """Надсилає повідомлення в інформаційний канал."""
-    await context.bot.send_message(chat_id=CHANNEL_ID, text=text, parse_mode="HTML")
+    """Надсилає повідомлення в гілку (topic) групи."""
+    await context.bot.send_message(
+        chat_id=GROUP_ID,
+        message_thread_id=TOPIC_ID,
+        text=text,
+        parse_mode="HTML"
+    )
 
 
 # ─── КОМАНДИ ───────────────────────────────────────────────────────────────
