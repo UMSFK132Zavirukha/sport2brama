@@ -11,7 +11,7 @@ except ImportError:
 
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
-    ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+    ReplyKeyboardMarkup, KeyboardButton,
 )
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -26,11 +26,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- Конфіг ---
-BOT_TOKEN  = os.environ["BOT_TOKEN"]
-GROUP_ID   = os.environ["GROUP_ID"]
-TOPIC_ID   = int(os.environ["TOPIC_ID"])
+BOT_TOKEN   = os.environ["BOT_TOKEN"]
+GROUP_ID    = os.environ["GROUP_ID"]
+TOPIC_ID    = int(os.environ["TOPIC_ID"])
 CALENDAR_ID = os.environ["CALENDAR_ID"]
-TIMEZONE   = pytz.timezone("Europe/Kiev")
+TIMEZONE    = pytz.timezone("Europe/Kiev")
 
 WORK_START    = int(os.environ.get("WORK_START", 8))
 WORK_END      = int(os.environ.get("WORK_END", 21))
@@ -52,7 +52,7 @@ BTN_CANCEL = "❌ Скасувати бронювання"
 calendar_service = CalendarService(CALENDAR_ID, TIMEZONE)
 
 
-# ─── ГОЛОВНЕ МЕНЮ (ReplyKeyboard) ──────────────────────────────────────────
+# ─── ГОЛОВНЕ МЕНЮ ──────────────────────────────────────────────────────────
 
 def main_menu() -> ReplyKeyboardMarkup:
     keyboard = [
@@ -74,7 +74,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ─── INLINE-КЛАВІАТУРИ ─────────────────────────────────────────────────────
 
 def date_keyboard(prefix: str) -> InlineKeyboardMarkup:
-    """14 днів вперед. prefix визначає до якого флоу належить вибір."""
     today = datetime.now(TIMEZONE).date()
     buttons, row = [], []
     for i in range(14):
@@ -105,8 +104,8 @@ def time_keyboard(date_str: str, busy_slots: List[str]) -> InlineKeyboardMarkup:
     if row:
         buttons.append(row)
     buttons.append([
-        InlineKeyboardButton("⬅️ Назад", callback_data="back_to_date"),
-        InlineKeyboardButton("🏠 Меню",  callback_data="main_menu"),
+        InlineKeyboardButton("⬅️ Назад",  callback_data="back_to_date"),
+        InlineKeyboardButton("🏠 Меню",   callback_data="main_menu"),
     ])
     return InlineKeyboardMarkup(buttons)
 
@@ -121,7 +120,6 @@ async def notify_group(context: ContextTypes.DEFAULT_TYPE, text: str):
 
 
 async def go_main_menu(query, context):
-    """Повертає користувача в головне меню з inline-повідомлення."""
     await query.edit_message_text("Оберіть дію 👇")
     await context.bot.send_message(
         chat_id=query.message.chat_id,
@@ -200,7 +198,7 @@ async def book_time_selected(update: Update, context: ContextTypes.DEFAULT_TYPE)
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ Підтвердити", callback_data="confirm"),
-             InlineKeyboardButton("❌ Скасувати",  callback_data="main_menu")]
+             InlineKeyboardButton("🏠 Меню",        callback_data="main_menu")]
         ])
     )
     return BOOK_CONFIRM
@@ -233,7 +231,8 @@ async def book_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"ID: <code>{event_id[:8]}</code>",
             parse_mode="HTML"
         )
-        await notify_group(context,
+        await notify_group(
+            context,
             f"🔴 <b>Зайнято!</b> {date_display} о {time_str} — заброньовано ({user.full_name})"
         )
     else:
@@ -260,6 +259,13 @@ async def check_date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE
         await go_main_menu(query, context)
         return ConversationHandler.END
 
+    if query.data == "check_again":
+        await query.edit_message_text(
+            "🔍 Виберіть дату для перевірки:",
+            reply_markup=date_keyboard("check_date_")
+        )
+        return CHECK_SELECT_DATE
+
     date_str = query.data.replace("check_date_", "")
     date_display = datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y")
 
@@ -275,24 +281,9 @@ async def check_date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE
         text,
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔍 Інша дата",   callback_data="check_again"),
+            [InlineKeyboardButton("🔍 Інша дата",    callback_data="check_again"),
              InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")]
         ])
-    )
-    return CHECK_SELECT_DATE
-
-
-async def check_again(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    if query.data == "main_menu":
-        await go_main_menu(query, context)
-        return ConversationHandler.END
-
-    await query.edit_message_text(
-        "🔍 Виберіть дату для перевірки:",
-        reply_markup=date_keyboard("check_date_")
     )
     return CHECK_SELECT_DATE
 
@@ -357,7 +348,8 @@ async def cancel_booking_selected(update: Update, context: ContextTypes.DEFAULT_
             f"✅ Бронювання <b>{event_info['date_display']} о {event_info['time']}</b> скасовано.",
             parse_mode="HTML"
         )
-        await notify_group(context,
+        await notify_group(
+            context,
             f"🟢 <b>Вільно!</b> {event_info['date_display']} о {event_info['time']} — скасовано"
         )
     else:
@@ -366,35 +358,27 @@ async def cancel_booking_selected(update: Update, context: ContextTypes.DEFAULT_
     return ConversationHandler.END
 
 
-# ─── РОУТЕР ТЕКСТОВИХ КНОПОК МЕНЮ ─────────────────────────────────────────
-
-async def menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    if text == BTN_BOOK:
-        return await book_start(update, context)
-    if text == BTN_CHECK:
-        return await check_start(update, context)
-    if text == BTN_MY:
-        await my_bookings(update, context)
-    if text == BTN_CANCEL:
-        return await cancel_booking_start(update, context)
-
-
 # ─── MAIN ──────────────────────────────────────────────────────────────────
 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Флоу бронювання
+    # Флоу бронювання — патерни чітко обмежують які callback обробляє цей handler
     book_conv = ConversationHandler(
         entry_points=[
             CommandHandler("book", book_start),
             MessageHandler(filters.Regex(f"^{BTN_BOOK}$"), book_start),
         ],
         states={
-            BOOK_SELECT_DATE: [CallbackQueryHandler(book_date_selected)],
-            BOOK_SELECT_TIME: [CallbackQueryHandler(book_time_selected)],
-            BOOK_CONFIRM:     [CallbackQueryHandler(book_confirm)],
+            BOOK_SELECT_DATE: [
+                CallbackQueryHandler(book_date_selected, pattern="^book_date_|^main_menu$"),
+            ],
+            BOOK_SELECT_TIME: [
+                CallbackQueryHandler(book_time_selected, pattern="^time_|^back_to_date$|^busy$|^main_menu$"),
+            ],
+            BOOK_CONFIRM: [
+                CallbackQueryHandler(book_confirm, pattern="^confirm$|^main_menu$"),
+            ],
         },
         fallbacks=[CommandHandler("start", start)],
     )
@@ -407,8 +391,7 @@ def main():
         ],
         states={
             CHECK_SELECT_DATE: [
-                CallbackQueryHandler(check_again,        pattern="^check_again$"),
-                CallbackQueryHandler(check_date_selected, pattern="^check_date_|^main_menu$"),
+                CallbackQueryHandler(check_date_selected, pattern="^check_date_|^check_again$|^main_menu$"),
             ],
         },
         fallbacks=[CommandHandler("start", start)],
@@ -421,7 +404,9 @@ def main():
             MessageHandler(filters.Regex(f"^{BTN_CANCEL}$"), cancel_booking_start),
         ],
         states={
-            CANCEL_SELECT: [CallbackQueryHandler(cancel_booking_selected)],
+            CANCEL_SELECT: [
+                CallbackQueryHandler(cancel_booking_selected, pattern="^del_|^main_menu$"),
+            ],
         },
         fallbacks=[CommandHandler("start", start)],
     )
