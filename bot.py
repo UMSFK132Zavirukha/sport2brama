@@ -385,7 +385,16 @@ async def cancel_booking_selected(update: Update, context: ContextTypes.DEFAULT_
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Флоу бронювання — патерни чітко обмежують які callback обробляє цей handler
+    # Спільні fallbacks — будь-яка кнопка меню скидає поточний флоу
+    common_fallbacks = [
+        CommandHandler("start", start),
+        MessageHandler(filters.Regex(f"^{BTN_BOOK}$"),   book_start),
+        MessageHandler(filters.Regex(f"^{BTN_CHECK}$"),  check_start),
+        MessageHandler(filters.Regex(f"^{BTN_CANCEL}$"), cancel_booking_start),
+        MessageHandler(filters.Regex(f"^{BTN_MY}$"),     my_bookings),
+    ]
+
+    # Флоу бронювання
     book_conv = ConversationHandler(
         entry_points=[
             CommandHandler("book", book_start),
@@ -402,7 +411,7 @@ def main():
                 CallbackQueryHandler(book_confirm, pattern="^confirm$|^main_menu$"),
             ],
         },
-        fallbacks=[CommandHandler("start", start)],
+        fallbacks=common_fallbacks,
     )
 
     # Флоу перевірки зайнятості
@@ -416,7 +425,7 @@ def main():
                 CallbackQueryHandler(check_date_selected, pattern="^check_date_|^check_again$|^main_menu$"),
             ],
         },
-        fallbacks=[CommandHandler("start", start)],
+        fallbacks=common_fallbacks,
     )
 
     # Флоу скасування
@@ -430,7 +439,7 @@ def main():
                 CallbackQueryHandler(cancel_booking_selected, pattern="^del_|^main_menu$"),
             ],
         },
-        fallbacks=[CommandHandler("start", start)],
+        fallbacks=common_fallbacks,
     )
 
     app.add_handler(CommandHandler("start", start))
