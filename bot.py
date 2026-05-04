@@ -1,14 +1,18 @@
 import logging
 import os
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta
 from typing import List
 import pytz
 try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
-    pass  # на Render/Railway змінні задані через dashboard
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+    pass
+
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup,
+    ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+)
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, filters, ContextTypes, ConversationHandler
@@ -22,69 +26,92 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- Конфіг ---
-BOT_TOKEN = os.environ["BOT_TOKEN"]
-GROUP_ID = os.environ["GROUP_ID"]              # наприклад -1001234567890
-TOPIC_ID = int(os.environ["TOPIC_ID"])         # ID гілки (message_thread_id)
-CALENDAR_ID = os.environ["CALENDAR_ID"]        # наприклад abc@group.calendar.google.com
-TIMEZONE = pytz.timezone("Europe/Kiev")
+BOT_TOKEN  = os.environ["BOT_TOKEN"]
+GROUP_ID   = os.environ["GROUP_ID"]
+TOPIC_ID   = int(os.environ["TOPIC_ID"])
+CALENDAR_ID = os.environ["CALENDAR_ID"]
+TIMEZONE   = pytz.timezone("Europe/Kiev")
 
-# Робочі години майданчику (можна змінювати в .env)
-WORK_START = int(os.environ.get("WORK_START", 8))
-WORK_END = int(os.environ.get("WORK_END", 21))
+WORK_START    = int(os.environ.get("WORK_START", 8))
+WORK_END      = int(os.environ.get("WORK_END", 21))
 SLOT_DURATION = int(os.environ.get("SLOT_DURATION", 1))
 
-# Стани розмови
-SELECT_DATE, SELECT_TIME, CONFIRM = range(3)
+# Стани ConversationHandler
+(
+    BOOK_SELECT_DATE, BOOK_SELECT_TIME, BOOK_CONFIRM,
+    CHECK_SELECT_DATE,
+    CANCEL_SELECT,
+) = range(5)
 
+# Тексти кнопок головного меню
+BTN_BOOK   = "📅 Забронювати"
+BTN_CHECK  = "🔍 Перевірити зайнятість"
+BTN_MY     = "📋 Мої бронювання"
+BTN_CANCEL = "❌ Скасувати бронювання"
 
 calendar_service = CalendarService(CALENDAR_ID, TIMEZONE)
 
 
-# ─── HELPERS ───────────────────────────────────────────────────────────────
+# ─── ГОЛОВНЕ МЕНЮ (ReplyKeyboard) ──────────────────────────────────────────
 
-def get_date_keyboard(offset_days: int = 0) -> InlineKeyboardMarkup:
-    """Клавіатура вибору дати (14 днів вперед)."""
+def main_menu() -> ReplyKeyboardMarkup:
+    keyboard = [
+        [KeyboardButton(BTN_BOOK),  KeyboardButton(BTN_CHECK)],
+        [KeyboardButton(BTN_MY),    KeyboardButton(BTN_CANCEL)],
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "👋 <b>Бот бронювання спортивного майданчику</b>\n\n"
+        "Оберіть дію з меню 👇",
+        parse_mode="HTML",
+        reply_markup=main_menu()
+    )
+
+
+# ─── INLINE-КЛАВІАТУРИ ─────────────────────────────────────────────────────
+
+def date_keyboard(prefix: str) -> InlineKeyboardMarkup:
+    """14 днів вперед. prefix визначає до якого флоу належить вибір."""
     today = datetime.now(TIMEZONE).date()
-    buttons = []
-    row = []
+    buttons, row = [], []
     for i in range(14):
-        d = today + timedelta(days=i + offset_days)
-        label = d.strftime("%d.%m") + (" (сьогодні)" if i == 0 else "")
-        row.append(InlineKeyboardButton(label, callback_data=f"date_{d.isoformat()}"))
+        d = today + timedelta(days=i)
+        label = d.strftime("%d.%m") + (" 〔сьогодні〕" if i == 0 else "")
+        row.append(InlineKeyboardButton(label, callback_data=f"{prefix}{d.isoformat()}"))
         if len(row) == 2:
             buttons.append(row)
             row = []
     if row:
         buttons.append(row)
-    buttons.append([InlineKeyboardButton("❌ Скасувати", callback_data="cancel")])
+    buttons.append([InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")])
     return InlineKeyboardMarkup(buttons)
 
 
-def get_time_keyboard(date_str: str, busy_slots: List[str]) -> InlineKeyboardMarkup:
-    """Клавіатура вибору часу з позначенням зайнятих слотів."""
-    buttons = []
-    row = []
+def time_keyboard(date_str: str, busy_slots: List[str]) -> InlineKeyboardMarkup:
+    buttons, row = [], []
     for hour in range(WORK_START, WORK_END):
         slot = f"{hour:02d}:00"
         if slot in busy_slots:
-            label = f"🔴 {slot}"
-            cb = "busy"
+            label, cb = f"🔴 {slot}", "busy"
         else:
-            label = f"🟢 {slot}"
-            cb = f"time_{date_str}_{slot}"
+            label, cb = f"🟢 {slot}", f"time_{date_str}_{slot}"
         row.append(InlineKeyboardButton(label, callback_data=cb))
         if len(row) == 3:
             buttons.append(row)
             row = []
     if row:
         buttons.append(row)
-    buttons.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_to_date"),
-                    InlineKeyboardButton("❌ Скасувати", callback_data="cancel")])
+    buttons.append([
+        InlineKeyboardButton("⬅️ Назад", callback_data="back_to_date"),
+        InlineKeyboardButton("🏠 Меню",  callback_data="main_menu"),
+    ])
     return InlineKeyboardMarkup(buttons)
 
 
-async def notify_channel(context: ContextTypes.DEFAULT_TYPE, text: str):
-    """Надсилає повідомлення в гілку (topic) групи."""
+async def notify_group(context: ContextTypes.DEFAULT_TYPE, text: str):
     await context.bot.send_message(
         chat_id=GROUP_ID,
         message_thread_id=TOPIC_ID,
@@ -93,37 +120,35 @@ async def notify_channel(context: ContextTypes.DEFAULT_TYPE, text: str):
     )
 
 
-# ─── КОМАНДИ ───────────────────────────────────────────────────────────────
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "👋 <b>Бот бронювання спортивного майданчику</b>\n\n"
-        "Що бажаєте зробити?\n\n"
-        "/book — забронювати час\n"
-        "/mybookings — мої бронювання\n"
-        "/check — перевірити зайнятість на дату\n"
-        "/cancel_booking — скасувати бронювання"
+async def go_main_menu(query, context):
+    """Повертає користувача в головне меню з inline-повідомлення."""
+    await query.edit_message_text("Оберіть дію 👇")
+    await context.bot.send_message(
+        chat_id=query.message.chat_id,
+        text="Головне меню:",
+        reply_markup=main_menu()
     )
-    await update.message.reply_text(text, parse_mode="HTML")
 
+
+# ─── БРОНЮВАННЯ ────────────────────────────────────────────────────────────
 
 async def book_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📅 Виберіть дату бронювання:",
-        reply_markup=get_date_keyboard()
+        reply_markup=date_keyboard("book_date_")
     )
-    return SELECT_DATE
+    return BOOK_SELECT_DATE
 
 
-async def date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def book_date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    if query.data == "cancel":
-        await query.edit_message_text("❌ Бронювання скасовано.")
+    if query.data == "main_menu":
+        await go_main_menu(query, context)
         return ConversationHandler.END
 
-    date_str = query.data.replace("date_", "")
+    date_str = query.data.replace("book_date_", "")
     context.user_data["booking_date"] = date_str
 
     busy = calendar_service.get_busy_slots(date_str)
@@ -134,73 +159,69 @@ async def date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.edit_message_text(
         f"📅 <b>{date_display}</b>\n"
-        f"🟢 Вільних слотів: {free_count}  🔴 Зайнятих: {len(busy)}\n\n"
+        f"🟢 Вільних: {free_count}  🔴 Зайнятих: {len(busy)}\n\n"
         "Виберіть час:",
         parse_mode="HTML",
-        reply_markup=get_time_keyboard(date_str, busy)
+        reply_markup=time_keyboard(date_str, busy)
     )
-    return SELECT_TIME
+    return BOOK_SELECT_TIME
 
 
-async def time_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def book_time_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
     if query.data == "busy":
         await query.answer("⛔️ Цей час вже зайнятий!", show_alert=True)
-        return SELECT_TIME
+        return BOOK_SELECT_TIME
 
     if query.data == "back_to_date":
         await query.edit_message_text(
             "📅 Виберіть дату бронювання:",
-            reply_markup=get_date_keyboard()
+            reply_markup=date_keyboard("book_date_")
         )
-        return SELECT_DATE
+        return BOOK_SELECT_DATE
 
-    if query.data == "cancel":
-        await query.edit_message_text("❌ Бронювання скасовано.")
+    if query.data == "main_menu":
+        await go_main_menu(query, context)
         return ConversationHandler.END
 
     _, date_str, time_str = query.data.split("_", 2)
     context.user_data["booking_time"] = time_str
-
     date_display = datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y")
-    user_name = update.effective_user.full_name
-
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Підтвердити", callback_data="confirm"),
-         InlineKeyboardButton("❌ Скасувати", callback_data="cancel")]
-    ])
+    end_hour = f"{int(time_str[:2]) + 1:02d}:00"
 
     await query.edit_message_text(
         f"📋 <b>Підтвердження бронювання</b>\n\n"
-        f"👤 Ім'я: {user_name}\n"
-        f"📅 Дата: {date_display}\n"
-        f"⏰ Час: {time_str} – {int(time_str[:2])+1:02d}:00\n\n"
+        f"👤 {update.effective_user.full_name}\n"
+        f"📅 {date_display}\n"
+        f"⏰ {time_str} – {end_hour}\n\n"
         "Підтвердити?",
         parse_mode="HTML",
-        reply_markup=keyboard
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Підтвердити", callback_data="confirm"),
+             InlineKeyboardButton("❌ Скасувати",  callback_data="main_menu")]
+        ])
     )
-    return CONFIRM
+    return BOOK_CONFIRM
 
 
-async def confirm_booking(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def book_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    if query.data == "cancel":
-        await query.edit_message_text("❌ Бронювання скасовано.")
+    if query.data == "main_menu":
+        await go_main_menu(query, context)
         return ConversationHandler.END
 
-    user = update.effective_user
+    user     = update.effective_user
     date_str = context.user_data["booking_date"]
     time_str = context.user_data["booking_time"]
     date_display = datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y")
-    hour = int(time_str[:2])
 
     event_id = calendar_service.create_booking(
         date_str=date_str,
-        hour=hour,
+        hour=int(time_str[:2]),
         user_id=str(user.id),
         user_name=user.full_name
     )
@@ -209,105 +230,154 @@ async def confirm_booking(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             f"✅ <b>Бронювання підтверджено!</b>\n\n"
             f"📅 {date_display} о {time_str}\n"
-            f"ID: <code>{event_id[:8]}</code>\n\n"
-            "Для скасування використайте /cancel_booking",
+            f"ID: <code>{event_id[:8]}</code>",
             parse_mode="HTML"
         )
-        await notify_channel(
-            context,
-            f"🔴 <b>Зайнято!</b> {date_display} о {time_str} — заброньовано"
+        await notify_group(context,
+            f"🔴 <b>Зайнято!</b> {date_display} о {time_str} — заброньовано ({user.full_name})"
         )
     else:
-        await query.edit_message_text("⚠️ Помилка бронювання. Спробуйте ще раз.")
+        await query.edit_message_text("⚠️ Помилка. Спробуйте ще раз.")
 
     return ConversationHandler.END
 
 
+# ─── ПЕРЕВІРКА ЗАЙНЯТОСТІ ──────────────────────────────────────────────────
+
+async def check_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🔍 Виберіть дату для перевірки:",
+        reply_markup=date_keyboard("check_date_")
+    )
+    return CHECK_SELECT_DATE
+
+
+async def check_date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "main_menu":
+        await go_main_menu(query, context)
+        return ConversationHandler.END
+
+    date_str = query.data.replace("check_date_", "")
+    date_display = datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y")
+
+    busy = calendar_service.get_busy_slots(date_str)
+    free = [f"{h:02d}:00" for h in range(WORK_START, WORK_END)
+            if f"{h:02d}:00" not in busy]
+
+    text = f"📅 <b>{date_display}</b>\n\n"
+    text += ("🟢 <b>Вільні:</b> " + ", ".join(free) + "\n\n") if free else "🟢 Вільних слотів немає\n\n"
+    text += ("🔴 <b>Зайняті:</b> " + ", ".join(busy)) if busy else "🔴 Зайнятих слотів немає"
+
+    await query.edit_message_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔍 Інша дата",   callback_data="check_again"),
+             InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")]
+        ])
+    )
+    return CHECK_SELECT_DATE
+
+
+async def check_again(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "main_menu":
+        await go_main_menu(query, context)
+        return ConversationHandler.END
+
+    await query.edit_message_text(
+        "🔍 Виберіть дату для перевірки:",
+        reply_markup=date_keyboard("check_date_")
+    )
+    return CHECK_SELECT_DATE
+
+
+# ─── МОЇ БРОНЮВАННЯ ────────────────────────────────────────────────────────
+
 async def my_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    bookings = calendar_service.get_user_bookings(user_id)
-
+    bookings = calendar_service.get_user_bookings(str(update.effective_user.id))
     if not bookings:
-        await update.message.reply_text("У вас немає активних бронювань.")
+        await update.message.reply_text(
+            "У вас немає активних бронювань.",
+            reply_markup=main_menu()
+        )
         return
-
     text = "📋 <b>Ваші бронювання:</b>\n\n"
     for b in bookings:
-        text += f"• {b['date_display']} о {b['time']} (ID: <code>{b['event_id'][:8]}</code>)\n"
-    await update.message.reply_text(text, parse_mode="HTML")
+        text += f"• {b['date_display']} о {b['time']}\n"
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=main_menu())
 
+
+# ─── СКАСУВАННЯ БРОНЮВАННЯ ─────────────────────────────────────────────────
 
 async def cancel_booking_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    bookings = calendar_service.get_user_bookings(user_id)
-
+    bookings = calendar_service.get_user_bookings(str(update.effective_user.id))
     if not bookings:
-        await update.message.reply_text("У вас немає активних бронювань.")
-        return
+        await update.message.reply_text(
+            "У вас немає активних бронювань.",
+            reply_markup=main_menu()
+        )
+        return ConversationHandler.END
 
-    buttons = []
-    for b in bookings:
-        label = f"{b['date_display']} о {b['time']}"
-        buttons.append([InlineKeyboardButton(label, callback_data=f"del_{b['event_id']}")])
-    buttons.append([InlineKeyboardButton("❌ Закрити", callback_data="close")])
+    buttons = [
+        [InlineKeyboardButton(
+            f"{b['date_display']} о {b['time']}",
+            callback_data=f"del_{b['event_id']}"
+        )]
+        for b in bookings
+    ]
+    buttons.append([InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")])
 
     await update.message.reply_text(
         "Виберіть бронювання для скасування:",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
+    return CANCEL_SELECT
 
 
-async def cancel_booking_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cancel_booking_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    if query.data == "close":
-        await query.edit_message_text("Закрито.")
-        return
+    if query.data == "main_menu":
+        await go_main_menu(query, context)
+        return ConversationHandler.END
 
-    event_id = query.data.replace("del_", "")
+    event_id   = query.data.replace("del_", "")
     event_info = calendar_service.get_event_info(event_id)
-    success = calendar_service.delete_booking(event_id)
+    success    = calendar_service.delete_booking(event_id)
 
     if success and event_info:
         await query.edit_message_text(
             f"✅ Бронювання <b>{event_info['date_display']} о {event_info['time']}</b> скасовано.",
             parse_mode="HTML"
         )
-        await notify_channel(
-            context,
-            f"🟢 <b>Вільно!</b> {event_info['date_display']} о {event_info['time']} — бронювання скасовано"
+        await notify_group(context,
+            f"🟢 <b>Вільно!</b> {event_info['date_display']} о {event_info['time']} — скасовано"
         )
     else:
         await query.edit_message_text("⚠️ Не вдалося скасувати. Спробуйте ще раз.")
 
+    return ConversationHandler.END
 
-async def check_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показує зайнятість на конкретну дату. Використання: /check 05.05.2026"""
-    args = context.args
-    if not args:
-        await update.message.reply_text("Використання: /check 05.05.2026")
-        return
-    try:
-        date_obj = datetime.strptime(args[0], "%d.%m.%Y")
-        date_str = date_obj.strftime("%Y-%m-%d")
-        date_display = args[0]
-    except ValueError:
-        await update.message.reply_text("Неправильний формат дати. Використовуйте: 05.05.2026")
-        return
 
-    busy = calendar_service.get_busy_slots(date_str)
-    free = [f"{h:02d}:00" for h in range(WORK_START, WORK_END) if f"{h:02d}:00" not in busy]
+# ─── РОУТЕР ТЕКСТОВИХ КНОПОК МЕНЮ ─────────────────────────────────────────
 
-    text = f"📅 <b>{date_display}</b>\n\n"
-    if free:
-        text += "🟢 <b>Вільні слоти:</b>\n" + ", ".join(free) + "\n\n"
-    if busy:
-        text += "🔴 <b>Зайняті слоти:</b>\n" + ", ".join(busy)
-    if not free and not busy:
-        text += "Немає даних на цю дату."
-
-    await update.message.reply_text(text, parse_mode="HTML")
+async def menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if text == BTN_BOOK:
+        return await book_start(update, context)
+    if text == BTN_CHECK:
+        return await check_start(update, context)
+    if text == BTN_MY:
+        await my_bookings(update, context)
+    if text == BTN_CANCEL:
+        return await cancel_booking_start(update, context)
 
 
 # ─── MAIN ──────────────────────────────────────────────────────────────────
@@ -315,22 +385,52 @@ async def check_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
-    booking_conv = ConversationHandler(
-        entry_points=[CommandHandler("book", book_start)],
+    # Флоу бронювання
+    book_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("book", book_start),
+            MessageHandler(filters.Regex(f"^{BTN_BOOK}$"), book_start),
+        ],
         states={
-            SELECT_DATE: [CallbackQueryHandler(date_selected)],
-            SELECT_TIME: [CallbackQueryHandler(time_selected)],
-            CONFIRM: [CallbackQueryHandler(confirm_booking)],
+            BOOK_SELECT_DATE: [CallbackQueryHandler(book_date_selected)],
+            BOOK_SELECT_TIME: [CallbackQueryHandler(book_time_selected)],
+            BOOK_CONFIRM:     [CallbackQueryHandler(book_confirm)],
+        },
+        fallbacks=[CommandHandler("start", start)],
+    )
+
+    # Флоу перевірки зайнятості
+    check_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("check", check_start),
+            MessageHandler(filters.Regex(f"^{BTN_CHECK}$"), check_start),
+        ],
+        states={
+            CHECK_SELECT_DATE: [
+                CallbackQueryHandler(check_again,        pattern="^check_again$"),
+                CallbackQueryHandler(check_date_selected, pattern="^check_date_|^main_menu$"),
+            ],
+        },
+        fallbacks=[CommandHandler("start", start)],
+    )
+
+    # Флоу скасування
+    cancel_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("cancel_booking", cancel_booking_start),
+            MessageHandler(filters.Regex(f"^{BTN_CANCEL}$"), cancel_booking_start),
+        ],
+        states={
+            CANCEL_SELECT: [CallbackQueryHandler(cancel_booking_selected)],
         },
         fallbacks=[CommandHandler("start", start)],
     )
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(booking_conv)
-    app.add_handler(CommandHandler("mybookings", my_bookings))
-    app.add_handler(CommandHandler("check", check_date))
-    app.add_handler(CommandHandler("cancel_booking", cancel_booking_start))
-    app.add_handler(CallbackQueryHandler(cancel_booking_callback, pattern="^del_|^close$"))
+    app.add_handler(book_conv)
+    app.add_handler(check_conv)
+    app.add_handler(cancel_conv)
+    app.add_handler(MessageHandler(filters.Regex(f"^{BTN_MY}$"), my_bookings))
 
     logger.info("Bot started")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
