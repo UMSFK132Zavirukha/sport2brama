@@ -339,23 +339,45 @@ async def cancel_booking_selected(update: Update, context: ContextTypes.DEFAULT_
         await go_main_menu(query, context)
         return ConversationHandler.END
 
-    event_id   = query.data.replace("del_", "")
+    event_id   = query.data[4:]  # безпечніше за replace("del_", "")
     event_info = calendar_service.get_event_info(event_id)
     success    = calendar_service.delete_booking(event_id)
 
     if success and event_info:
-        await query.edit_message_text(
-            f"✅ Бронювання <b>{event_info['date_display']} о {event_info['time']}</b> скасовано.",
-            parse_mode="HTML"
-        )
         await notify_group(
             context,
             f"🟢 <b>Вільно!</b> {event_info['date_display']} о {event_info['time']} — скасовано"
         )
     else:
         await query.edit_message_text("⚠️ Не вдалося скасувати. Спробуйте ще раз.")
+        return ConversationHandler.END
 
-    return ConversationHandler.END
+    # Показуємо оновлений список бронювань замість завершення діалогу
+    remaining = calendar_service.get_user_bookings(str(update.effective_user.id))
+    if not remaining:
+        await query.edit_message_text(
+            f"✅ Бронювання <b>{event_info['date_display']} о {event_info['time']}</b> скасовано.\n\n"
+            "Активних бронювань більше немає.",
+            parse_mode="HTML"
+        )
+        return ConversationHandler.END
+
+    buttons = [
+        [InlineKeyboardButton(
+            f"{b['date_display']} о {b['time']}",
+            callback_data=f"del_{b['event_id']}"
+        )]
+        for b in remaining
+    ]
+    buttons.append([InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")])
+
+    await query.edit_message_text(
+        f"✅ Бронювання <b>{event_info['date_display']} о {event_info['time']}</b> скасовано.\n\n"
+        "Виберіть ще бронювання для скасування або поверніться в меню:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+    return CANCEL_SELECT
 
 
 # ─── MAIN ──────────────────────────────────────────────────────────────────
