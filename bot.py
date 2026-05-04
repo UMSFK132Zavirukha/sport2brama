@@ -385,15 +385,18 @@ async def cancel_booking_selected(update: Update, context: ContextTypes.DEFAULT_
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Fallback просто завершує поточний conversation — далі повідомлення
-    # підхоплює відповідний ConversationHandler через свої entry_points
     async def _end_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        return ConversationHandler.END
+
+    async def my_bookings_and_end(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await my_bookings(update, context)
         return ConversationHandler.END
 
     end_fallbacks = [
         CommandHandler("start", start),
+        MessageHandler(filters.Regex(f"^{BTN_MY}$"), my_bookings_and_end),
         MessageHandler(
-            filters.Regex(f"^({BTN_BOOK}|{BTN_CHECK}|{BTN_CANCEL}|{BTN_MY})$"),
+            filters.Regex(f"^({BTN_BOOK}|{BTN_CHECK}|{BTN_CANCEL})$"),
             _end_conversation,
         ),
     ]
