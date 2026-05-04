@@ -3,9 +3,11 @@ import os
 from datetime import datetime, timedelta, time
 from typing import List
 import pytz
-from dotenv import load_dotenv
-
-load_dotenv()  # завантажує змінні з .env якщо файл існує
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # на Render/Railway змінні задані через dashboard
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
